@@ -4,10 +4,7 @@
 
 ### 内存炸不了
 - 全局仅维持一个 `uint64_t g_current_task_idx` 计数器。
-- 线程获取当前索引后，通过位运算即时计算目标：
-  $$\text{主机偏移量} = \frac{\text{task\_idx}}{2}$$
-  $$\text{端口选择} = \begin{cases} 80, & \text{task\_idx} \pmod 2 = 0 \\ 443, & \text{task\_idx} \pmod 2 = 1 \end{cases}$$
-  $$\text{目标 IP} = g\_start\_ip + \text{主机偏移量}$$
+- 线程获取当前索引后，通过位运算即时计算目标。
 - 无论是 `/30` 还是 `/8` 网段，程序堆内存占用恒定维持在毫秒级的局部变量与线程栈（通常小于 15MB）。
 
 ### 跨平台的
