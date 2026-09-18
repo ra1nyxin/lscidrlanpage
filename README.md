@@ -80,23 +80,15 @@
 
 ### Linux 静态编译
 ```bash
-# 依赖安装
-sudo apt update && sudo apt install -y build-essential libcurl4-openssl-dev libssl-dev zlib1g-dev
-
-# 静态构建指令（正常来说会报错，晚点再解决）
-gcc -O2 -Wall -pthread lslanpage.c -o lslanpage \
-    -Wl,-Bstatic -lcurl -lssl -lcrypto -lz \
-    -Wl,-Bdynamic -ldl -lpthread
+sudo apt install -y build-essential libcurl4-openssl-dev libssl-dev zlib1g-dev libgpg-error-dev
+gcc -O2 -Wall -pthread lslanpage.c -o lslanpage -Wl,-Bstatic -lcurl -Wl,-Bdynamic $(pkg-config --static --libs libcurl) -ldl
 ```
 
 ### Windows 静态编译
 ```bash
 # MSYS2 控制台下安装依赖
 pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-curl-winssl mingw-w64-x86_64-openssl
-
-# 生成无外部依赖的静态 EXE
-gcc -O2 -Wall lslanpage.c -o lslanpage.exe \
-    -static -lcurl -lssl -lcrypto -lws2_32 -lcrypt32 -lwldap32 -lpthread
+gcc -O2 -Wall lslanpage.c -o lslanpage.exe -static -lcurl -lssl -lcrypto -lws2_32 -lcrypt32 -lwldap32 -lpthread
 ```
 
 ### 参数表
