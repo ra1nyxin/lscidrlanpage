@@ -80,8 +80,7 @@
 
 ### Linux 静态编译
 ```bash
-sudo apt install -y build-essential libcurl4-openssl-dev libssl-dev zlib1g-dev libgpg-error-dev
-gcc -O2 -Wall -pthread lslanpage.c -o lslanpage -Wl,-Bstatic -lcurl -Wl,-Bdynamic $(pkg-config --static --libs libcurl) -ldl
+sudo apt update && sudo apt install -y build-essential pkg-config libcurl4-openssl-dev libssl-dev zlib1g-dev libnghttp2-dev libngtcp2-dev libnghttp3-dev libssh2-1-dev libpsl-dev libbrotli-dev libzstd-dev libidn2-dev libunistring-dev libldap-dev libkrb5-dev libgpg-error-dev && gcc -O2 -Wall -pthread lslanpage.c -o lslanpage -Wl,-Bstatic -lcurl -Wl,-Bdynamic $(pkg-config --static --libs libcurl) -ldl
 ```
 
 ### Windows 静态编译
