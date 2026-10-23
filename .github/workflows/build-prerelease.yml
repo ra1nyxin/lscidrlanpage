@@ -1,0 +1,189 @@
+﻿name: Build static binaries and publish prerelease
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+# 同一个仓库只允许一个发布流程排队执行，避免两次 push 同时改写 Release。
+concurrency:
+  group: rolling-prerelease-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  RELEASE_TAG: prerelease
+
+jobs:
+  linux:
+    name: Linux ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ca-certificates curl \
+            libssl-dev zlib1g-dev
+
+      # 发行版提供的 libcurl.a 会拖入 LDAP/GSSAPI/RTMP 等一堆不一定有静态库的依赖，
+      # 这里自行构建一个只依赖 OpenSSL + zlib 的最小静态 libcurl，保证产物真正全静态。
+      - name: Build static libcurl
+        run: |
+          set -euxo pipefail
+          curl -fsSL https://curl.se/download/curl-8.11.1.tar.xz -o /tmp/curl.tar.xz
+          tar -xJf /tmp/curl.tar.xz -C /tmp
+          cd /tmp/curl-8.11.1
+          ./configure \
+            --prefix="$RUNNER_TEMP/curl-static" \
+            --disable-shared --enable-static \
+            --with-openssl --with-zlib \
+            --without-libpsl --without-brotli --without-zstd \
+            --without-libssh2 --without-nghttp2 --without-nghttp3 --without-ngtcp2 \
+            --without-libidn2 \
+            --disable-ldap --disable-ldaps \
+            --disable-rtsp --disable-dict --disable-telnet --disable-tftp \
+            --disable-pop3 --disable-imap --disable-smtp --disable-gopher --disable-mqtt \
+            --disable-manual
+          make -j"$(nproc)"
+          make install
+
+      - name: Build (O2, fully static, stripped)
+        run: |
+          set -euxo pipefail
+          CURL_PREFIX="$RUNNER_TEMP/curl-static"
+          gcc -O2 -Wall -Wextra -pthread -DNDEBUG -no-pie \
+            -I"$CURL_PREFIX/include" \
+            lslanpage.c -o lslanpage \
+            -static -static-libgcc \
+            "$CURL_PREFIX/lib/libcurl.a" \
+            -lssl -lcrypto -lz -ldl -lm
+          strip --strip-all lslanpage
+          file lslanpage
+          file lslanpage | grep -Eq 'statically linked|static-pie linked'
+          file lslanpage | grep -q 'stripped'
+          ldd lslanpage || true
+
+      - name: Stage artifact
+        run: |
+          mkdir -p dist
+          cp lslanpage "dist/lslanpage-linux-${{ matrix.arch }}"
+          chmod +x dist/*
+          ls -lh dist
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: lslanpage-linux-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  windows:
+    name: Windows x86_64
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-curl
+            mingw-w64-x86_64-openssl
+            mingw-w64-x86_64-pkgconf
+
+      - name: Build (O2, fully static, stripped)
+        shell: msys2 {0}
+        run: |
+          set -euxo pipefail
+          pkg-config --modversion libcurl
+          pkg-config --static --libs libcurl
+          test -f "$(pkg-config --variable=libdir libcurl)/libcurl.a"
+          gcc -O2 -Wall -Wextra -DNDEBUG -DCURL_STATICLIB \
+            lslanpage.c -o lslanpage.exe \
+            -static -static-libgcc \
+            $(pkg-config --static --libs libcurl)
+          strip --strip-all lslanpage.exe
+          file lslanpage.exe
+          objdump -p lslanpage.exe | grep 'DLL Name' || true
+          if objdump -p lslanpage.exe | grep -Eiq 'DLL Name: (libcurl|libssl|libcrypto|libssh2|libnghttp2|libzstd|libbrotli|zlib)'; then
+            echo "ERROR: binary still depends on non-system DLLs" >&2
+            exit 1
+          fi
+
+      - name: Stage artifact
+        shell: msys2 {0}
+        run: |
+          mkdir -p dist
+          cp lslanpage.exe "dist/lslanpage-windows-x86_64.exe"
+          ls -lh dist
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: lslanpage-windows-x86_64
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Publish rolling prerelease
+    needs: [linux, windows]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          set -euxo pipefail
+          cd dist
+          sha256sum ./* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Replace the single prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # 删除旧 Release 并连同 tag 一起清理，保证仓库里始终只有这一个预发布记录。
+          gh release delete "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
+          # 用当前提交重新创建唯一的 prerelease，并上传本次全部资产。
+          gh release create "$RELEASE_TAG" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --title "Rolling build ${GITHUB_SHA::7}" \
+            --notes "自动构建的预发布版本，随 \`main\`/\`master\` 每次推送覆盖更新。
+
+          - 提交：\`${GITHUB_SHA}\`
+          - 触发：${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          - 平台：Linux x86_64 / Linux aarch64 / Windows x86_64（全部静态链接、-O2、已 strip）
+          - 校验：\`SHA256SUMS.txt\`
+
+          本 Release 仅保留最新一次构建，历史资产不会累积。"
